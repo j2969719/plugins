@@ -76,13 +76,13 @@ static void check_content (gchar *filename, CustomData *data) {
   content_type = g_content_type_guess (filename, NULL, 0, NULL);
   media_type = g_strdup_printf ("%.5s", content_type);
 
-  if (g_strcmp0 (media_type, "video") == 0) {
-    data->is_video = TRUE;
-    gtk_notebook_set_current_page (GTK_NOTEBOOK (data->notebook), 0);
-  }
-  else {
+  if (g_strcmp0 (media_type, "audio") == 0) {
     data->is_video = FALSE;
     gtk_notebook_set_current_page (GTK_NOTEBOOK (data->notebook), 1);
+  }
+  else {
+    data->is_video = TRUE;
+    gtk_notebook_set_current_page (GTK_NOTEBOOK (data->notebook), 0);
   }
   g_free (content_type);
   g_free (media_type);
