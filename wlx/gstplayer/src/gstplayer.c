@@ -28,6 +28,9 @@ typedef struct _CustomData {
   GtkWidget *streams_list;        /* Text widget to display info about the streams */
   gulong slider_update_signal_id; /* Signal ID for the slider update signal */
 
+  GtkWidget *notebook;
+  gboolean is_video;
+
   GstState state;                 /* Current state of the pipeline */
   gint64 duration;                /* Duration of the clip, in nanoseconds */
   guint timer;                    /* Refresh timer */
@@ -55,7 +58,7 @@ static void realize_cb (GtkWidget *widget, CustomData *data) {
   gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (data->playbin), window_handle);
 }
 
-static gint playpause_cb (GtkWidget *widget, GdkEventButton *event, CustomData *data) {
+static gboolean playpause_cb (GtkWidget *widget, GdkEventButton *event, CustomData *data) {
   GstState state;
   gst_element_get_state (data->playbin, &state, NULL, GST_CLOCK_TIME_NONE);
 
@@ -65,6 +68,24 @@ static gint playpause_cb (GtkWidget *widget, GdkEventButton *event, CustomData *
     gst_element_set_state (data->playbin, GST_STATE_PLAYING);
 
   return TRUE;
+}
+
+static void check_content (gchar *filename, CustomData *data) {
+  gchar *content_type, *media_type;
+
+  content_type = g_content_type_guess (filename, NULL, 0, NULL);
+  media_type = g_strdup_printf ("%.5s", content_type);
+
+  if (g_strcmp0 (media_type, "video") == 0) {
+    data->is_video = TRUE;
+    gtk_notebook_set_current_page (GTK_NOTEBOOK (data->notebook), 0);
+  }
+  else {
+    data->is_video = FALSE;
+    gtk_notebook_set_current_page (GTK_NOTEBOOK (data->notebook), 1);
+  }
+  g_free (content_type);
+  g_free (media_type);
 }
 
 /* This function is called when the PLAY button is clicked */
@@ -91,10 +112,7 @@ static void delete_event_cb (GtkWidget *widget, GdkEvent *event, CustomData *dat
  * rescaling, etc). GStreamer takes care of this in the PAUSED and PLAYING states, otherwise,
  * we simply draw a black rectangle to avoid garbage showing up. */
 static gboolean expose_cb (GtkWidget *widget, GdkEventExpose *event, CustomData *data) {
-  gint n_video;
-  g_object_get (data->playbin, "n-video", &n_video, NULL);
-
-  if (data->state < GST_STATE_PAUSED || n_video == 0) {
+  if (data->state < GST_STATE_PAUSED || !data->is_video) {
     GtkAllocation allocation;
     GdkWindow *window = gtk_widget_get_window (widget);
     cairo_t *cr;
@@ -125,7 +143,6 @@ static GtkWidget *create_ui (HWND ParentWin, CustomData *data) {
   GtkWidget *main_window;  /* The uppermost window, containing all other windows */
   GtkWidget *video_window; /* The drawing area where the video will be shown */
   GtkWidget *main_box;     /* VBox to hold main_hbox and the controls */
-  GtkWidget *main_hbox;    /* HBox to hold the video_window and the stream info text widget */
   GtkWidget *controls;     /* HBox to hold the buttons and the slider */
   GtkWidget *play_button, *pause_button, *stop_button; /* Buttons */
   GtkWidget *scroll_window;
@@ -169,13 +186,13 @@ static GtkWidget *create_ui (HWND ParentWin, CustomData *data) {
   gtk_box_pack_start (GTK_BOX (controls), stop_button, FALSE, FALSE, 2);
   gtk_box_pack_start (GTK_BOX (controls), data->slider, TRUE, TRUE, 2);
 
-  main_hbox = gtk_notebook_new ();
-  gtk_notebook_append_page (GTK_NOTEBOOK (main_hbox), video_window, NULL);
-  gtk_notebook_append_page (GTK_NOTEBOOK (main_hbox), scroll_window, NULL);
-  gtk_notebook_set_tab_pos (GTK_NOTEBOOK (main_hbox), GTK_POS_BOTTOM);
+  data->notebook = gtk_notebook_new ();
+  gtk_notebook_append_page (GTK_NOTEBOOK (data->notebook), video_window, NULL);
+  gtk_notebook_append_page (GTK_NOTEBOOK (data->notebook), scroll_window, NULL);
+  gtk_notebook_set_tab_pos (GTK_NOTEBOOK (data->notebook), GTK_POS_BOTTOM);
 
   main_box = gtk_vbox_new (FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (main_box), main_hbox, TRUE, TRUE, 0);
+  gtk_box_pack_start (GTK_BOX (main_box), data->notebook, TRUE, TRUE, 0);
   gtk_box_pack_start (GTK_BOX (main_box), controls, FALSE, FALSE, 0);
   gtk_container_add (GTK_CONTAINER (main_window), main_box);
 
@@ -426,6 +443,8 @@ HWND DCPCALL ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
   g_signal_connect (G_OBJECT (bus), "message::application", (GCallback)application_cb, data);
   gst_object_unref (bus);
 
+  check_content (FileToLoad, data);
+
   /* Start playing */
   ret = gst_element_set_state (data->playbin, GST_STATE_PLAYING);
   if (ret == GST_STATE_CHANGE_FAILURE) {
@@ -468,6 +487,8 @@ int DCPCALL ListLoadNext(HWND ParentWin, HWND PluginWin, char* FileToLoad, int S
   fileUri = g_filename_to_uri(FileToLoad, NULL, NULL);
   g_object_set (data->playbin, "uri", fileUri, NULL);
   if (fileUri) g_free(fileUri);
+
+  check_content (FileToLoad, data);
 
   ret = gst_element_set_state (data->playbin, GST_STATE_PLAYING);
   return (ret != GST_STATE_CHANGE_FAILURE) ? (LISTPLUGIN_OK) : (LISTPLUGIN_ERROR);
