@@ -29,7 +29,7 @@ typedef struct _CustomData {
   gulong slider_update_signal_id; /* Signal ID for the slider update signal */
 
   GtkWidget *notebook;
-  gboolean is_video;
+  gboolean is_audio;
 
   GstState state;                 /* Current state of the pipeline */
   gint64 duration;                /* Duration of the clip, in nanoseconds */
@@ -77,11 +77,11 @@ static void check_content (gchar *filename, CustomData *data) {
   media_type = g_strdup_printf ("%.5s", content_type);
 
   if (g_strcmp0 (media_type, "audio") == 0) {
-    data->is_video = FALSE;
+    data->is_audio = TRUE;
     gtk_notebook_set_current_page (GTK_NOTEBOOK (data->notebook), 1);
   }
   else {
-    data->is_video = TRUE;
+    data->is_audio = FALSE;
     gtk_notebook_set_current_page (GTK_NOTEBOOK (data->notebook), 0);
   }
   g_free (content_type);
@@ -112,7 +112,7 @@ static void delete_event_cb (GtkWidget *widget, GdkEvent *event, CustomData *dat
  * rescaling, etc). GStreamer takes care of this in the PAUSED and PLAYING states, otherwise,
  * we simply draw a black rectangle to avoid garbage showing up. */
 static gboolean expose_cb (GtkWidget *widget, GdkEventExpose *event, CustomData *data) {
-  if (data->state < GST_STATE_PAUSED || !data->is_video) {
+  if (data->state < GST_STATE_PAUSED || data->is_audio) {
     GtkAllocation allocation;
     GdkWindow *window = gtk_widget_get_window (widget);
     cairo_t *cr;
@@ -482,6 +482,8 @@ int DCPCALL ListLoadNext(HWND ParentWin, HWND PluginWin, char* FileToLoad, int S
   GstStateChangeReturn ret;
 
   data = (CustomData *)g_object_get_data(G_OBJECT(PluginWin), "custom-data");
+  gtk_range_set_value (GTK_RANGE (data->slider), 0);
+  data->duration = GST_CLOCK_TIME_NONE;
   gst_element_set_state (data->playbin, GST_STATE_READY);
 
   fileUri = g_filename_to_uri(FileToLoad, NULL, NULL);
