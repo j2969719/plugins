@@ -55,6 +55,18 @@ static void realize_cb (GtkWidget *widget, CustomData *data) {
   gst_video_overlay_set_window_handle (GST_VIDEO_OVERLAY (data->playbin), window_handle);
 }
 
+static gint playpause_cb (GtkWidget *widget, GdkEventButton *event, CustomData *data) {
+  GstState state;
+  gst_element_get_state (data->playbin, &state, NULL, GST_CLOCK_TIME_NONE);
+
+  if (state == GST_STATE_PLAYING)
+    gst_element_set_state (data->playbin, GST_STATE_PAUSED);
+  else
+    gst_element_set_state (data->playbin, GST_STATE_PLAYING);
+
+  return TRUE;
+}
+
 /* This function is called when the PLAY button is clicked */
 static void play_cb (GtkButton *button, CustomData *data) {
   gst_element_set_state (data->playbin, GST_STATE_PLAYING);
@@ -124,8 +136,10 @@ static GtkWidget *create_ui (HWND ParentWin, CustomData *data) {
 
   video_window = gtk_drawing_area_new ();
   gtk_widget_set_double_buffered (video_window, FALSE);
+  gtk_widget_add_events (video_window, GDK_BUTTON_PRESS_MASK);
   g_signal_connect (video_window, "realize", G_CALLBACK (realize_cb), data);
   g_signal_connect (video_window, "expose_event", G_CALLBACK (expose_cb), data);
+  g_signal_connect (G_OBJECT (video_window), "button_press_event", G_CALLBACK (playpause_cb), data);
 
   play_button = gtk_button_new_from_stock (GTK_STOCK_MEDIA_PLAY);
   g_signal_connect (G_OBJECT (play_button), "clicked", G_CALLBACK (play_cb), data);
