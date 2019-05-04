@@ -79,7 +79,10 @@ static void delete_event_cb (GtkWidget *widget, GdkEvent *event, CustomData *dat
  * rescaling, etc). GStreamer takes care of this in the PAUSED and PLAYING states, otherwise,
  * we simply draw a black rectangle to avoid garbage showing up. */
 static gboolean expose_cb (GtkWidget *widget, GdkEventExpose *event, CustomData *data) {
-  if (data->state < GST_STATE_PAUSED) {
+  gint n_video;
+  g_object_get (data->playbin, "n-video", &n_video, NULL);
+
+  if (data->state < GST_STATE_PAUSED || n_video == 0) {
     GtkAllocation allocation;
     GdkWindow *window = gtk_widget_get_window (widget);
     cairo_t *cr;
@@ -113,6 +116,7 @@ static GtkWidget *create_ui (HWND ParentWin, CustomData *data) {
   GtkWidget *main_hbox;    /* HBox to hold the video_window and the stream info text widget */
   GtkWidget *controls;     /* HBox to hold the buttons and the slider */
   GtkWidget *play_button, *pause_button, *stop_button; /* Buttons */
+  GtkWidget *scroll_window;
 
   main_window = gtk_vbox_new (FALSE, 0);
   gtk_container_add(GTK_CONTAINER((GtkWidget *)(ParentWin)), main_window);
@@ -136,8 +140,14 @@ static GtkWidget *create_ui (HWND ParentWin, CustomData *data) {
   gtk_scale_set_draw_value (GTK_SCALE (data->slider), 0);
   data->slider_update_signal_id = g_signal_connect (G_OBJECT (data->slider), "value-changed", G_CALLBACK (slider_cb), data);
 
+  scroll_window = gtk_scrolled_window_new(NULL, NULL);
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll_window), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+
   data->streams_list = gtk_text_view_new ();
   gtk_text_view_set_editable (GTK_TEXT_VIEW (data->streams_list), FALSE);
+  gtk_text_view_set_cursor_visible (GTK_TEXT_VIEW (data->streams_list), FALSE);
+
+  gtk_container_add (GTK_CONTAINER (scroll_window), data->streams_list);
 
   controls = gtk_hbox_new (FALSE, 0);
   gtk_box_pack_start (GTK_BOX (controls), play_button, FALSE, FALSE, 2);
@@ -145,9 +155,10 @@ static GtkWidget *create_ui (HWND ParentWin, CustomData *data) {
   gtk_box_pack_start (GTK_BOX (controls), stop_button, FALSE, FALSE, 2);
   gtk_box_pack_start (GTK_BOX (controls), data->slider, TRUE, TRUE, 2);
 
-  main_hbox = gtk_hbox_new (FALSE, 0);
-  gtk_box_pack_start (GTK_BOX (main_hbox), video_window, TRUE, TRUE, 0);
-  gtk_box_pack_start (GTK_BOX (main_hbox), data->streams_list, FALSE, FALSE, 2);
+  main_hbox = gtk_notebook_new ();
+  gtk_notebook_append_page (GTK_NOTEBOOK (main_hbox), video_window, NULL);
+  gtk_notebook_append_page (GTK_NOTEBOOK (main_hbox), scroll_window, NULL);
+  gtk_notebook_set_tab_pos (GTK_NOTEBOOK (main_hbox), GTK_POS_BOTTOM);
 
   main_box = gtk_vbox_new (FALSE, 0);
   gtk_box_pack_start (GTK_BOX (main_box), main_hbox, TRUE, TRUE, 0);
@@ -202,11 +213,17 @@ static void tags_cb (GstElement *playbin, gint stream, CustomData *data) {
 static void error_cb (GstBus *bus, GstMessage *msg, CustomData *data) {
   GError *err;
   gchar *debug_info;
+  GtkTextBuffer *text;
 
   /* Print error details on the screen */
   gst_message_parse_error (msg, &err, &debug_info);
-  g_printerr ("Error received from element %s: %s\n", GST_OBJECT_NAME (msg->src), err->message);
-  g_printerr ("Debugging information: %s\n", debug_info ? debug_info : "none");
+
+  text = gtk_text_view_get_buffer (GTK_TEXT_VIEW (data->streams_list));
+  gtk_text_buffer_insert_at_cursor (text, g_strdup_printf ("\nError received from element %s: %s\n", GST_OBJECT_NAME (msg->src), err->message), -1);
+  gtk_text_buffer_insert_at_cursor (text, g_strdup_printf ("Debugging information: %s\n", debug_info ? debug_info : "none"), -1);
+
+  //g_printerr ("Error received from element %s: %s\n", GST_OBJECT_NAME (msg->src), err->message);
+  //g_printerr ("Debugging information: %s\n", debug_info ? debug_info : "none");
   g_clear_error (&err);
   g_free (debug_info);
 
@@ -236,12 +253,56 @@ static void state_changed_cb (GstBus *bus, GstMessage *msg, CustomData *data) {
   }
 }
 
+static void text_add_tags (const GstTagList *list, const gchar *tag, GtkTextBuffer *text) {
+  gchar *str, *total_str;
+  guint num;
+  gdouble fnum;
+  gboolean vbool;
+  GstDateTime *date;
+
+  if (gst_tag_get_type (tag) == G_TYPE_STRING) {
+    if (gst_tag_list_get_string (list, tag, &str)) {
+      total_str = g_strdup_printf ("  %s: %s\n", gst_tag_get_nick (tag), str);
+      gtk_text_buffer_insert_at_cursor (text, total_str, -1);
+      g_free (total_str);
+      g_free (str);
+    }
+  }
+  else if (gst_tag_get_type (tag) == G_TYPE_UINT) {
+    if (gst_tag_list_get_uint (list, tag, &num)) {
+      total_str = g_strdup_printf ("  %s: %d\n", gst_tag_get_nick (tag), num);
+      gtk_text_buffer_insert_at_cursor (text, total_str, -1);
+      g_free (total_str);
+    }
+  }
+  else if (gst_tag_get_type (tag) == G_TYPE_DOUBLE) {
+    if (gst_tag_list_get_double (list, tag, &fnum)) {
+      total_str = g_strdup_printf ("  %s: %.1f\n", gst_tag_get_nick (tag), fnum);
+      gtk_text_buffer_insert_at_cursor (text, total_str, -1);
+      g_free (total_str);
+    }
+  }
+  else if (gst_tag_get_type (tag) == G_TYPE_BOOLEAN) {
+    if (gst_tag_list_get_boolean (list, tag, &vbool) && vbool) {
+      total_str = g_strdup_printf ("  %s\n", gst_tag_get_nick (tag));
+      gtk_text_buffer_insert_at_cursor (text, total_str, -1);
+      g_free (total_str);
+    }
+  }
+  else if (gst_tag_get_type (tag) == GST_TYPE_DATE_TIME) {
+    if (gst_tag_list_get_date_time (list, tag, &date)) {
+      total_str = g_strdup_printf ("  %s: %s\n", gst_tag_get_nick (tag), gst_date_time_to_iso8601_string(date));
+      gtk_text_buffer_insert_at_cursor (text, total_str, -1);
+      g_free (total_str);
+    }
+  }
+}
+
 /* Extract metadata from all the streams and write it to the text widget in the GUI */
 static void analyze_streams (CustomData *data) {
   gint i;
   GstTagList *tags;
-  gchar *str, *total_str;
-  guint rate;
+  gchar *total_str;
   gint n_video, n_audio, n_text;
   GtkTextBuffer *text;
 
@@ -262,11 +323,7 @@ static void analyze_streams (CustomData *data) {
       total_str = g_strdup_printf ("video stream %d:\n", i);
       gtk_text_buffer_insert_at_cursor (text, total_str, -1);
       g_free (total_str);
-      gst_tag_list_get_string (tags, GST_TAG_VIDEO_CODEC, &str);
-      total_str = g_strdup_printf ("  codec: %s\n", str ? str : "unknown");
-      gtk_text_buffer_insert_at_cursor (text, total_str, -1);
-      g_free (total_str);
-      g_free (str);
+      gst_tag_list_foreach(tags, (GstTagForeachFunc)text_add_tags, text);
       gst_tag_list_free (tags);
     }
   }
@@ -279,23 +336,7 @@ static void analyze_streams (CustomData *data) {
       total_str = g_strdup_printf ("\naudio stream %d:\n", i);
       gtk_text_buffer_insert_at_cursor (text, total_str, -1);
       g_free (total_str);
-      if (gst_tag_list_get_string (tags, GST_TAG_AUDIO_CODEC, &str)) {
-        total_str = g_strdup_printf ("  codec: %s\n", str);
-        gtk_text_buffer_insert_at_cursor (text, total_str, -1);
-        g_free (total_str);
-        g_free (str);
-      }
-      if (gst_tag_list_get_string (tags, GST_TAG_LANGUAGE_CODE, &str)) {
-        total_str = g_strdup_printf ("  language: %s\n", str);
-        gtk_text_buffer_insert_at_cursor (text, total_str, -1);
-        g_free (total_str);
-        g_free (str);
-      }
-      if (gst_tag_list_get_uint (tags, GST_TAG_BITRATE, &rate)) {
-        total_str = g_strdup_printf ("  bitrate: %d\n", rate);
-        gtk_text_buffer_insert_at_cursor (text, total_str, -1);
-        g_free (total_str);
-      }
+      gst_tag_list_foreach(tags, (GstTagForeachFunc)text_add_tags, text);
       gst_tag_list_free (tags);
     }
   }
@@ -308,12 +349,7 @@ static void analyze_streams (CustomData *data) {
       total_str = g_strdup_printf ("\nsubtitle stream %d:\n", i);
       gtk_text_buffer_insert_at_cursor (text, total_str, -1);
       g_free (total_str);
-      if (gst_tag_list_get_string (tags, GST_TAG_LANGUAGE_CODE, &str)) {
-        total_str = g_strdup_printf ("  language: %s\n", str);
-        gtk_text_buffer_insert_at_cursor (text, total_str, -1);
-        g_free (total_str);
-        g_free (str);
-      }
+      gst_tag_list_foreach(tags, (GstTagForeachFunc)text_add_tags, text);
       gst_tag_list_free (tags);
     }
   }
@@ -351,7 +387,7 @@ HWND DCPCALL ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
   if (!data->playbin) {
     g_printerr ("Not all elements could be created.\n");
     g_free(data);
-    return 0;
+    return NULL;
   }
 
   /* Set the URI to play */
@@ -382,7 +418,7 @@ HWND DCPCALL ListLoad(HWND ParentWin, char* FileToLoad, int ShowFlags)
     g_printerr ("Unable to set the pipeline to the playing state.\n");
     gst_object_unref (data->playbin);
     g_free(data);
-    return 0;
+    return NULL;
   }
 
   /* Register a function that GLib will call every second */
@@ -426,4 +462,71 @@ int DCPCALL ListLoadNext(HWND ParentWin, HWND PluginWin, char* FileToLoad, int S
 void DCPCALL ListGetDetectString(char* DetectString, int maxlen)
 {
   g_strlcpy(DetectString, DETECT_STRING, maxlen - 1);
+}
+
+int DCPCALL ListSearchText(HWND ListWin, char* SearchString, int SearchParameter)
+{
+  CustomData *data;
+  GtkTextBuffer *text;
+  GtkTextMark *last_pos;
+  GtkTextIter iter, mstart, mend;
+  gboolean found;
+
+  data = (CustomData *)g_object_get_data (G_OBJECT (ListWin), "custom-data");
+  text = gtk_text_view_get_buffer (GTK_TEXT_VIEW (data->streams_list));
+  last_pos = gtk_text_buffer_get_mark (text, "last_pos");
+
+  if (last_pos == NULL)
+    gtk_text_buffer_get_start_iter (text, &iter);
+  else
+    gtk_text_buffer_get_iter_at_mark (text, &iter, last_pos);
+
+  if (SearchParameter & lcs_backwards)
+    found = gtk_text_iter_backward_search (&iter, SearchString, GTK_TEXT_SEARCH_TEXT_ONLY, &mend, &mstart, NULL);
+  else
+    found = gtk_text_iter_forward_search (&iter, SearchString, GTK_TEXT_SEARCH_TEXT_ONLY, &mstart, &mend, NULL);
+
+  if (found){
+    gtk_text_buffer_select_range (text, &mstart, &mend);
+    gtk_text_buffer_create_mark (text, "last_pos", &mend, FALSE);
+    gtk_text_view_scroll_mark_onscreen (GTK_TEXT_VIEW (data->streams_list),
+                                        gtk_text_buffer_get_mark (text, "last_pos"));
+
+  }
+  else {
+    GtkWidget *dialog = gtk_message_dialog_new (GTK_WINDOW (gtk_widget_get_toplevel (GTK_WIDGET (ListWin))),
+                                                GTK_DIALOG_MODAL, GTK_MESSAGE_INFO, GTK_BUTTONS_OK,
+                                                "\"%s\" not found!", SearchString);
+    gtk_dialog_run (GTK_DIALOG (dialog));
+    gtk_widget_destroy (dialog);
+    return LISTPLUGIN_ERROR;
+  }
+  return LISTPLUGIN_OK;
+}
+
+int DCPCALL ListSendCommand(HWND ListWin, int Command, int Parameter)
+{
+  CustomData *data;
+  GtkTextBuffer *text;
+  GtkTextIter p;
+
+  data = (CustomData *)g_object_get_data (G_OBJECT (ListWin), "custom-data");
+  text = gtk_text_view_get_buffer (GTK_TEXT_VIEW (data->streams_list));
+
+  switch (Command) {
+    case lc_copy :
+      gtk_text_buffer_copy_clipboard (text, gtk_clipboard_get (GDK_SELECTION_CLIPBOARD));
+      break;
+
+    case lc_selectall :
+      gtk_text_buffer_get_start_iter (text, &p);
+      gtk_text_buffer_place_cursor (text, &p);
+      gtk_text_buffer_get_end_iter (text, &p);
+      gtk_text_buffer_move_mark_by_name (text, "selection_bound", &p);
+      break;
+
+    default :
+       return LISTPLUGIN_ERROR;
+  }
+  return LISTPLUGIN_OK;
 }
